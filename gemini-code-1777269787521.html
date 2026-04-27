@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>材料性質查詢系統</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        /* --- 基礎視覺風格 --- */
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f0f2f5;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding-top: 10vh;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 600px;
+            padding: 20px;
+            box-sizing: border-box;
+            z-index: 10;
+        }
+
+        h1 {
+            text-align: center;
+            color: #333;
+            margin-bottom: 30px;
+            font-size: clamp(24px, 5vw, 32px); /* 響應式字體 */
+        }
+
+        /* --- 搜尋框 --- */
+        .search-wrapper { position: relative; width: 100%; }
+        #searchInput {
+            width: 100%;
+            padding: 18px 24px;
+            font-size: 18px;
+            border: none;
+            border-radius: 30px;
+            box-shadow: 0 6px 12px rgba(0, 0, 0, 0.1);
+            outline: none;
+            transition: box-shadow 0.3s ease;
+            box-sizing: border-box;
+        }
+        #searchInput:focus { box-shadow: 0 6px 16px rgba(0, 120, 215, 0.3); }
+
+        .instruction {
+            text-align: center; color: #666; margin-top: 15px; font-size: 14px;
+        }
+
+        /* --- 彈窗 (Modal) 樣式 (響應式設計) --- */
+        .modal-overlay {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background-color: rgba(0, 0, 0, 0.5);
+            display: none; justify-content: center; align-items: center;
+            z-index: 100;
+            padding: 20px; /* 避免手機版貼邊 */
+            box-sizing: border-box;
+        }
+
+        .modal-content {
+            background-color: #fff; padding: 30px; border-radius: 12px;
+            width: 100%; max-width: 500px;
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.2);
+            position: relative;
+            max-height: 90vh; /* 避免內容過長超出螢幕 */
+            overflow-y: auto;
+        }
+
+        .modal-content h2 {
+            margin-top: 0; color: #0078d7; border-bottom: 2px solid #f0f2f5; padding-bottom: 10px;
+            font-size: clamp(20px, 4vw, 24px);
+        }
+
+        .property-list {
+            list-style-type: none; padding: 0; font-size: 16px; line-height: 1.8; color: #333;
+        }
+        .property-list span {
+            font-weight: bold; color: #555; display: inline-block; width: 180px;
+        }
+
+        .close-btn {
+            position: absolute; top: 15px; right: 20px; font-size: 24px;
+            color: #999; cursor: pointer; border: none; background: none;
+        }
+        .close-btn:hover { color: #333; }
+
+        .modal-hint {
+            margin-top: 20px; font-size: 13px; color: #888; text-align: center;
+            border-top: 1px dashed #ccc; padding-top: 10px;
+        }
+
+        /* 圖表容器 */
+        .chart-container {
+            position: relative; width: 100%; height: 250px; margin-top: 15px;
+        }
+        
+        /* 手機版優化列表排版 */
+        @media (max-width: 480px) {
+            .property-list span { width: 100%; display: block; margin-bottom: 4px; color: #0078d7;}
+            .property-list li { margin-bottom: 12px; }
+        }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <h1>材料性質查詢系統</h1>
+        <div class="search-wrapper">
+            <input type="text" id="searchInput" placeholder="輸入材料，如：Steel, Aluminum" autocomplete="off">
+        </div>
+        <p class="instruction">輸入材料名稱後按下 <strong>Enter</strong> 進行查詢</p>
+    </div>
+
+    <div class="modal-overlay" id="modal1">
+        <div class="modal-content">
+            <button class="close-btn" onclick="resetState()">&times;</button>
+            <h2 id="materialNameDisplay">材料名稱</h2>
+            <ul class="property-list" id="propertyList"></ul>
+            <p class="modal-hint">再次按下 <strong>Enter</strong> 查看應力-應變曲線</p>
+        </div>
+    </div>
+
+    <div class="modal-overlay" id="modal2">
+        <div class="modal-content">
+            <button class="close-btn" onclick="resetState()">&times;</button>
+            <h2>應力-應變曲線</h2>
+            <p id="curveMaterialName" style="text-align: center; font-weight: bold; margin-bottom: 5px;"></p>
+            <div class="chart-container">
+                <canvas id="ssChart"></canvas>
+            </div>
+            <p class="modal-hint">按下 <strong>Enter</strong> 關閉並重新查詢</p>
+        </div>
+    </div>
+
+    <script>
+        // --- 1. 材料資料庫 (加入用於繪圖的數值 E 與 UTS) ---
+        const materialDatabase = {
+            "Steel": {
+                name: "Steel (Medium Carbon)",
+                fractureToughness: "50 MPa·m^1/2", tensileStrength: "585 MPa", youngsModulus: "200 GPa", poissonsRatio: "0.29",
+                plotData: { E: 200, UTS: 585 } // E(GPa), UTS(MPa)
+            },
+            "Aluminum": {
+                name: "Aluminum Alloy (6061-T6)",
+                fractureToughness: "29 MPa·m^1/2", tensileStrength: "310 MPa", youngsModulus: "69 GPa", poissonsRatio: "0.33",
+                plotData: { E: 69, UTS: 310 }
+            },
+            "Alumina": {
+                name: "Alumina (Al2O3)",
+                fractureToughness: "4 MPa·m^1/2", tensileStrength: "300 MPa", youngsModulus: "380 GPa", poissonsRatio: "0.22",
+                plotData: { E: 380, UTS: 300 } // 脆性材料，塑性區極小
+            },
+            "Ti-6Al-4V": {
+                name: "Titanium Alloy (Ti-6Al-4V)",
+                fractureToughness: "75 MPa·m^1/2", tensileStrength: "950 MPa", youngsModulus: "114 GPa", poissonsRatio: "0.34",
+                plotData: { E: 114, UTS: 950 }
+            },
+            "Polycarbonate": {
+                name: "Polycarbonate (PC)",
+                fractureToughness: "2.2 MPa·m^1/2", tensileStrength: "65 MPa", youngsModulus: "2.4 GPa", poissonsRatio: "0.37",
+                plotData: { E: 2.4, UTS: 65 }
+            }
+        };
+
+        // --- 2. 狀態管理 ---
+        let currentState = 0; // 0: 初始, 1: 彈窗1開啟, 2: 彈窗2開啟
+        let currentMaterial = "";
+        let chartInstance = null; // 用於儲存 Chart.js 實例，避免重複渲染重疊
+
+        const searchInput = document.getElementById('searchInput');
+        const modal1 = document.getElementById('modal1');
+        const modal2 = document.getElementById('modal2');
+
+        // --- 3. 核心邏輯：鍵盤事件監聽 (包含輸入法防護) ---
+        document.addEventListener('keydown', function(event) {
+            // 【重要】防止中文輸入法（IME）選字時誤觸 Enter
+            // event.isComposing 為 true 代表正在拼字/選字；keyCode 229 是常見的 IME 佔位碼
+            if (event.isComposing || event.keyCode === 229) {
+                return; 
+            }
+
+            if (event.key === 'Enter') {
+                if (currentState === 0) {
+                    // --- 狀態 0 -> 1：第一次 Enter ---
+                    const query = searchInput.value.trim();
+                    if (!query) return;
+
+                    // 比對材料 (支援部分字串包含比對，增加易用性)
+                    let foundKey = Object.keys(materialDatabase).find(key => 
+                        key.toLowerCase().includes(query.toLowerCase()) || 
+                        materialDatabase[key].name.toLowerCase().includes(query.toLowerCase())
+                    );
+
+                    if (foundKey) {
+                        currentMaterial = foundKey;
+                        showProperties(materialDatabase[foundKey]);
+                        modal1.style.display = 'flex';
+                        currentState = 1;
+                    } else {
+                        alert("查無此材料，建議輸入：Steel, Aluminum, Alumina, Ti-6Al-4V, Polycarbonate");
+                    }
+                } 
+                else if (currentState === 1) {
+                    // --- 狀態 1 -> 2：第二次 Enter ---
+                    modal1.style.display = 'none';
+                    document.getElementById('curveMaterialName').innerText = materialDatabase[currentMaterial].name;
+                    drawChart(materialDatabase[currentMaterial].plotData);
+                    modal2.style.display = 'flex';
+                    currentState = 2;
+                }
+                else if (currentState === 2) {
+                    // --- 狀態 2 -> 0：第三次 Enter (關閉並重置) ---
+                    resetState();
+                }
+            }
+            
+            // 允許按 Esc 退出
+            if (event.key === 'Escape') resetState();
+        });
+
+        // --- 4. 輔助函式 ---
+        function showProperties(data) {
+            document.getElementById('materialNameDisplay').innerText = data.name;
+            document.getElementById('propertyList').innerHTML = `
+                <li><span>斷裂韌性 (K_Ic):</span> ${data.fractureToughness}</li>
+                <li><span>抗拉強度 (UTS):</span> ${data.tensileStrength}</li>
+                <li><span>楊氏模數 (E):</span> ${data.youngsModulus}</li>
+                <li><span>泊松比 (ν):</span> ${data.poissonsRatio}</li>
+            `;
+            searchInput.blur(); // 移除輸入框焦點
+        }
+
+        function resetState() {
+            modal1.style.display = 'none';
+            modal2.style.display = 'none';
+            currentState = 0;
+            currentMaterial = "";
+            searchInput.value = ""; 
+            searchInput.focus();
+        }
+
+        // --- 5. 圖表繪製函式 ---
+        function drawChart(plotData) {
+            const ctx = document.getElementById('ssChart').getContext('2d');
+            
+            // 如果已經有圖表存在，必須先銷毀，否則會發生重疊閃爍的 Bug
+            if (chartInstance) {
+                chartInstance.destroy();
+            }
+
+            // 根據 E (GPa) 和 UTS (MPa) 產生一條簡單的模擬曲線資料
+            // 彈性區：斜率為 E (注意單位換算，這裡用相對應變值示意)
+            // 塑性區：用簡單的非線性函數模擬到 UTS
+            let labels = [];
+            let dataPoints = [];
+            const E_MPa = plotData.E * 1000;
+            const yieldStrength = plotData.UTS * 0.75; // 假設降伏強度約為 UTS 的 75%
+            const yieldStrain = yieldStrength / E_MPa;
+            
+            // 建立 20 個數據點
+            for (let i = 0; i <= 20; i++) {
+                let strain = (i / 20) * (yieldStrain * 8); // 假設斷裂應變為降伏應變的 8 倍
+                labels.push(strain.toFixed(4));
+                
+                let stress;
+                if (strain <= yieldStrain) {
+                    stress = strain * E_MPa; // 線性彈性區 (Hooke's Law)
+                } else {
+                    // 簡單的拋物線模擬塑性硬化至 UTS
+                    let plasticStrain = strain - yieldStrain;
+                    let maxPlasticStrain = (yieldStrain * 8) - yieldStrain;
+                    let ratio = plasticStrain / maxPlasticStrain;
+                    stress = yieldStrength + (plotData.UTS - yieldStrength) * Math.sin(ratio * Math.PI / 2);
+                }
+                dataPoints.push(stress);
+            }
+
+            // 建立 Chart.js 圖表
+            chartInstance = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'Engineering Stress (MPa)',
+                        data: dataPoints,
+                        borderColor: '#0078d7',
+                        backgroundColor: 'rgba(0, 120, 215, 0.1)',
+                        borderWidth: 2,
+                        fill: true,
+                        tension: 0.4, // 使曲線平滑
+                        pointRadius: 0 // 隱藏數據點讓曲線看起來連續
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: { title: { display: true, text: 'Strain (ε)' }, ticks: { maxTicksLimit: 5 } },
+                        y: { title: { display: true, text: 'Stress (MPa)' }, beginAtZero: true }
+                    },
+                    plugins: {
+                        legend: { display: false } // 隱藏圖例，版面更乾淨
+                    }
+                }
+            });
+        }
+    </script>
+</body>
+</html>
